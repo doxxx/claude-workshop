@@ -1,0 +1,33 @@
+{
+  "name": "claude-workshop",
+  "description": "Gordon Tyler's Claude Code plugins",
+  "owner": {
+    "name": "Gordon Tyler",
+    "url": "https://github.com/doxxx"
+  },
+  "metadata": {
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "usage-band",
+      "source": "./plugins/usage-band",
+      "description": "Model, effort and usage bars for context, session and weekly limits above the prompt",
+      "version": "0.1.0",
+      "author": {
+        "name": "Gordon Tyler"
+      },
+      "homepage": "https://github.com/doxxx/claude-workshop",
+      "repository": "https://github.com/doxxx/claude-workshop",
+      "license": "MIT",
+      "keywords": [
+        "statusline",
+        "usage",
+        "rate-limits",
+        "context",
+        "mod"
+      ],
+      "category": "productivity"
+    }
+  ]
+}

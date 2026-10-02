@@ -1,0 +1,5 @@
+# Type declarations the engine lays beside each loaded mod.
+.claude-plugin/types/
+
+# Editor settings, local to each machine.
+.vscode/

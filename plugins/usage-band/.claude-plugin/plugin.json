@@ -1,0 +1,19 @@
+{
+  "name": "usage-band",
+  "version": "0.1.0",
+  "description": "Model, effort and usage bars for context, session and weekly limits above the prompt",
+  "author": {
+    "name": "Gordon Tyler"
+  },
+  "homepage": "https://github.com/doxxx/claude-workshop",
+  "repository": "https://github.com/doxxx/claude-workshop",
+  "license": "MIT",
+  "keywords": [
+    "statusline",
+    "usage",
+    "rate-limits",
+    "context",
+    "mod"
+  ],
+  "types": "./types/index.d.ts"
+}
