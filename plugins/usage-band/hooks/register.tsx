@@ -1,8 +1,10 @@
 import { atom, read, update } from 'claude-code'
-import type { Register, SessionRateLimit } from 'claude-code'
+import type { EngineInterface, Register, SessionRateLimit } from 'claude-code'
+import type { Location } from '../types'
 
 const cachedAt = atom({ plugin: 'usage-band', key: 'cachedAt' } as const, null)
 const effort = atom({ plugin: 'usage-band', key: 'effort' } as const, null)
+const location = atom({ plugin: 'usage-band', key: 'location' } as const, null)
 
 // The mod API reports no cache TTL. Main-thread requests on this account
 // write 1h cache entries, so the expiry is counted from that.
@@ -47,6 +49,107 @@ export const parseOffset = (text: string): number | null => {
   return match[1] === '-' ? -minutes : minutes
 }
 
+// Replaces a leading home folder with ~, as a whole path component only, so
+// /home/gordon-old does not become ~-old. Each pair is a path and the home it
+// is tested against, and the first that matches wins. Callers pass resolved
+// pairs too, since /home can be a symlink to /var/home.
+export const tildify = (path: string, pairs: readonly [string, string][]): string => {
+  for (const [candidate, home] of pairs) {
+    if (!candidate || !home) continue
+    if (candidate === home) return '~'
+    if (candidate.startsWith(`${home}/`)) return `~${candidate.slice(home.length)}`
+  }
+  return path
+}
+
+// Inside a linked worktree, the path as it would read in the main working
+// tree, keeping any subdirectory below the worktree root. Rebasing onto the
+// main root also covers worktrees placed outside .claude/worktrees.
+export const mainTreePath = (cwd: string, worktreeRoot: string, commonDir: string): string => {
+  if (!commonDir.endsWith('/.git')) return cwd
+  if (cwd !== worktreeRoot && !cwd.startsWith(`${worktreeRoot}/`)) return cwd
+  return commonDir.slice(0, -'/.git'.length) + cwd.slice(worktreeRoot.length)
+}
+
+
+// The label's width as drawn: the path, then " {wt name}" and " (branch)".
+export const labelLength = (location: Location): number =>
+  location.path.length +
+  (location.worktree ? ` {wt ${location.worktree}}`.length : 0) +
+  (location.branch ? ` (${location.branch})`.length : 0)
+
+// The number of ─ cells that fill the rule after its label: "── " before the
+// label and one space after it. At least one, so it still reads as a border.
+export const ruleFill = (columns: number, labelLength: number): number =>
+  Math.max(1, columns - 3 - labelLength - 1)
+
+// Runs git in a directory, resolving to its trimmed output, or '' when it
+// fails, which includes running outside a repo.
+const git = async ($: EngineInterface, cwd: string, args: string[]): Promise<string> => {
+  try {
+    const result = await $.process.run(['git', '--no-optional-locks', ...args], { cwd })
+    return result.exitCode === 0 ? result.stdout.trim() : ''
+  } catch {
+    return ''
+  }
+}
+
+const findLocation = async ($: EngineInterface): Promise<Location> => {
+  const cwd = await $.session.cwd()
+  const [dirs, current] = await Promise.all([
+    git($, cwd, [
+      'rev-parse',
+      '--path-format=absolute',
+      '--git-dir',
+      '--git-common-dir',
+      '--show-toplevel',
+    ]),
+    git($, cwd, ['branch', '--show-current']),
+  ])
+
+  // An empty branch is either a detached HEAD or no repo at all; HEAD still
+  // resolving to a commit tells them apart.
+  let branch: string | null = current || null
+  if (!branch && dirs) {
+    const sha = await git($, cwd, ['rev-parse', '--short', 'HEAD'])
+    if (sha) branch = `detached@${sha}`
+  }
+
+  // A linked worktree's git dir is <common dir>/worktrees/<name>.
+  let path = cwd
+  let worktree: string | null = null
+  const [gitDir, commonDir, toplevel] = dirs.split('\n')
+  if (gitDir && commonDir && toplevel && gitDir !== commonDir) {
+    worktree = gitDir.slice(gitDir.lastIndexOf('/') + 1)
+    path = mainTreePath(cwd, toplevel, commonDir)
+  }
+
+  const home = (await $.env.get('HOME')) ?? ''
+  let resolved: string[] = []
+  if (home) {
+    try {
+      const result = await $.process.run(['readlink', '-f', '--', home, path])
+      resolved = result.stdout.split('\n')
+    } catch {}
+  }
+  const [homeReal = '', pathReal = ''] = resolved
+  // The unresolved pair goes first, so a path that only passes through some
+  // other symlink below home keeps the spelling it was given.
+  path = tildify(path, [
+    [path, home],
+    [path, homeReal],
+    [pathReal, homeReal],
+  ])
+
+  return { path, worktree, branch }
+}
+
+// Stores the location, which redraws the band when it changed.
+async function refreshLocation($: EngineInterface): Promise<void> {
+  const found = await findLocation($)
+  await update($, location, () => found)
+}
+
 export const register: Register = on => {
   let offsetMinutes = -new Date().getTimezoneOffset()
 
@@ -60,10 +163,20 @@ export const register: Register = on => {
     }
 
     // Reset times and the cache expiry move with the clock, not with any
-    // event, so the band redraws on a timer as well.
-    $.clock.every(30_000, () => $.ui.invalidate('ui.render'))
+    // event, so the band redraws on a timer as well. The directory and branch
+    // can change outside a turn, so they refresh there too.
+    $.clock.every(30_000, () => refreshLocation($))
+    await refreshLocation($)
 
     return next(e)
+  })
+
+  // A turn's commands can change branch or directory, so the location is read
+  // again after each main-thread turn rather than on every render.
+  on('turn.complete', async ($, e, next) => {
+    const result = await next(e)
+    if (e.agentId === undefined) await refreshLocation($)
+    return result
   })
 
   // turn.step streams, so the hook forwards the response's chunks unchanged
@@ -97,9 +210,10 @@ export const register: Register = on => {
     if (e.props.hasSurvey) return next(e)
 
     const { Box, Text } = $.ui.resolve(e)
-    const [model, level, usage, lastCachedAt, now] = await Promise.all([
+    const [model, level, place, usage, lastCachedAt, now] = await Promise.all([
       $.session.model(),
       read($, effort),
+      read($, location),
       $.session.usage(),
       read($, cachedAt),
       $.clock.now(),
@@ -147,7 +261,19 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
-        <Text color="gray">{'─'.repeat(e.props.bodyColumns)}</Text>
+        {place ? (
+          <Text wrap="truncate">
+            <Text color="gray">── </Text>
+            <Text color="blue" bold>
+              {place.path}
+            </Text>
+            {place.worktree ? <Text color="green">{` {wt ${place.worktree}}`}</Text> : null}
+            {place.branch ? <Text color="yellow">{` (${place.branch})`}</Text> : null}
+            <Text color="gray">{` ${'─'.repeat(ruleFill(e.props.bodyColumns, labelLength(place)))}`}</Text>
+          </Text>
+        ) : (
+          <Text color="gray">{'─'.repeat(e.props.bodyColumns)}</Text>
+        )}
         <Box>
           <Text color="white" wrap="truncate">
             {model}

@@ -23,7 +23,10 @@ Run these after every change:
 claude plugin validate .
 claude plugin validate plugins/<name>
 claude plugin test plugins/<name>
+mise exec -- tsc -p plugins/<name>
 ```
+
+TypeScript comes from the repo's `mise.toml`.
 
 ## Hooks mods (usage-band)
 

@@ -1,7 +1,7 @@
 {
   "name": "usage-band",
-  "version": "0.1.0",
-  "description": "Model, effort and usage bars for context, session and weekly limits above the prompt",
+  "version": "0.2.0",
+  "description": "Directory, git branch, model, effort and usage bars for context, session and weekly limits above the prompt",
   "author": {
     "name": "Gordon Tyler"
   },

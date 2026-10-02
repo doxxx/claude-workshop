@@ -1,6 +1,47 @@
 import { expect, test } from 'claude-code/testing'
 
-import { bar, formatTime, formatTokens, parseOffset } from '../hooks/register'
+import {
+  bar,
+  formatTime,
+  formatTokens,
+  labelLength,
+  mainTreePath,
+  parseOffset,
+  ruleFill,
+  tildify,
+} from '../hooks/register'
+
+test('home becomes ~ as a whole component only', async () => {
+  const home = '/home/gordon'
+  expect(tildify(home, [[home, home]])).toBe('~')
+  expect(tildify('/home/gordon/Projects', [['/home/gordon/Projects', home]])).toBe('~/Projects')
+  expect(tildify('/home/gordon-old', [['/home/gordon-old', home]])).toBe('/home/gordon-old')
+  // /home is a symlink to /var/home: only the resolved pair matches.
+  expect(
+    tildify('/var/home/gordon/x', [
+      ['/var/home/gordon/x', home],
+      ['/var/home/gordon/x', '/var/home/gordon'],
+    ]),
+  ).toBe('~/x')
+  expect(tildify('/tmp', [['/tmp', home], ['', '']])).toBe('/tmp')
+})
+
+test('worktree paths read as the main tree', async () => {
+  const common = '/repo/.git'
+  expect(mainTreePath('/repo/.claude/worktrees/wt', '/repo/.claude/worktrees/wt', common)).toBe('/repo')
+  expect(mainTreePath('/elsewhere/wt/src/a', '/elsewhere/wt', common)).toBe('/repo/src/a')
+  expect(mainTreePath('/elsewhere/wt2', '/elsewhere/wt', common)).toBe('/elsewhere/wt2')
+  expect(mainTreePath('/bare/wt', '/bare/wt', '/bare.git')).toBe('/bare/wt')
+})
+
+test('the rule fills to the width', async () => {
+  const location = { path: '~/p', worktree: 'wt', branch: 'main' }
+  // "~/p" + " {wt wt}" + " (main)"
+  expect(labelLength(location)).toBe(3 + 8 + 7)
+  expect(labelLength({ path: '~/p', worktree: null, branch: null })).toBe(3)
+  expect(ruleFill(40, 18)).toBe(18)
+  expect(ruleFill(10, 18)).toBe(1)
+})
 
 test('token counts render compactly', async () => {
   expect(formatTokens(850)).toBe('850')
