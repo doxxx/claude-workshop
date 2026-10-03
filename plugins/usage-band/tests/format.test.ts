@@ -2,11 +2,13 @@ import { expect, test } from 'claude-code/testing'
 
 import {
   bar,
+  branchText,
   formatTime,
   formatTokens,
   labelLength,
   mainTreePath,
   parseOffset,
+  parseStatus,
   ruleFill,
   tildify,
 } from '../hooks/register'
@@ -34,11 +36,37 @@ test('worktree paths read as the main tree', async () => {
   expect(mainTreePath('/bare/wt', '/bare/wt', '/bare.git')).toBe('/bare/wt')
 })
 
+const clean = { ahead: 0, behind: 0, modified: 0 }
+
+test('git status gives ahead, behind and modified counts', async () => {
+  const text = [
+    '# branch.oid abc',
+    '# branch.head main',
+    '# branch.upstream origin/main',
+    '# branch.ab +2 -1',
+    '1 .M N... 100644 100644 100644 a b hooks/register.tsx',
+    '1 M. N... 100644 100644 100644 a b README.md',
+    '',
+  ].join('\n')
+  expect(parseStatus(text)).toEqual({ ahead: 2, behind: 1, modified: 2 })
+  expect(parseStatus('# branch.head main\n')).toEqual(clean)
+  expect(parseStatus('')).toEqual(clean)
+})
+
+test('the branch text leads with the nonzero counts', async () => {
+  const base = { path: '~/p', worktree: null, branch: 'main' }
+  expect(branchText({ ...base, ...clean })).toBe('main')
+  expect(branchText({ ...base, ahead: 2, behind: 1, modified: 3 })).toBe('↓1 ↑2 *3 main')
+  expect(branchText({ ...base, ...clean, modified: 4 })).toBe('*4 main')
+})
+
 test('the rule fills to the width', async () => {
-  const location = { path: '~/p', worktree: 'wt', branch: 'main' }
+  const location = { path: '~/p', worktree: 'wt', branch: 'main', ...clean }
   // "~/p" + " {wt wt}" + " (main)"
   expect(labelLength(location)).toBe(3 + 8 + 7)
-  expect(labelLength({ path: '~/p', worktree: null, branch: null })).toBe(3)
+  // " (↓1 *3 main)"
+  expect(labelLength({ ...location, behind: 1, modified: 3 })).toBe(3 + 8 + 13)
+  expect(labelLength({ path: '~/p', worktree: null, branch: null, ...clean })).toBe(3)
   expect(ruleFill(40, 18)).toBe(18)
   expect(ruleFill(10, 18)).toBe(1)
 })

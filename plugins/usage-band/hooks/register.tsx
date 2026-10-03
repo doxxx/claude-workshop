@@ -71,12 +71,43 @@ export const mainTreePath = (cwd: string, worktreeRoot: string, commonDir: strin
   return commonDir.slice(0, -'/.git'.length) + cwd.slice(worktreeRoot.length)
 }
 
+// Reads `git status --porcelain=v2 --branch` output: "# branch.ab +A -B" holds
+// the commits ahead of and behind the upstream, and appears only when there
+// is one; every line not starting with # is a changed file.
+export const parseStatus = (text: string): Pick<Location, 'ahead' | 'behind' | 'modified'> => {
+  let ahead = 0
+  let behind = 0
+  let modified = 0
+  for (const line of text.split('\n')) {
+    if (!line) continue
+    const ab = /^# branch\.ab \+(\d+) -(\d+)$/.exec(line)
+    if (ab) {
+      ahead = Number(ab[1])
+      behind = Number(ab[2])
+    } else if (!line.startsWith('#')) {
+      modified++
+    }
+  }
+  return { ahead, behind, modified }
+}
+
+// The text inside the branch's parentheses: incoming ↓ and outgoing ↑ commits
+// and the * count of modified files, each only when nonzero, then the branch.
+export const branchText = (location: Location): string =>
+  [
+    location.behind ? `↓${location.behind}` : '',
+    location.ahead ? `↑${location.ahead}` : '',
+    location.modified ? `*${location.modified}` : '',
+    location.branch ?? '',
+  ]
+    .filter(Boolean)
+    .join(' ')
 
 // The label's width as drawn: the path, then " {wt name}" and " (branch)".
 export const labelLength = (location: Location): number =>
   location.path.length +
   (location.worktree ? ` {wt ${location.worktree}}`.length : 0) +
-  (location.branch ? ` (${location.branch})`.length : 0)
+  (location.branch ? ` (${branchText(location)})`.length : 0)
 
 // The number of ─ cells that fill the rule after its label: "── " before the
 // label and one space after it. At least one, so it still reads as a border.
@@ -96,7 +127,7 @@ const git = async ($: EngineInterface, cwd: string, args: string[]): Promise<str
 
 const findLocation = async ($: EngineInterface): Promise<Location> => {
   const cwd = await $.session.cwd()
-  const [dirs, current] = await Promise.all([
+  const [dirs, current, status] = await Promise.all([
     git($, cwd, [
       'rev-parse',
       '--path-format=absolute',
@@ -105,6 +136,9 @@ const findLocation = async ($: EngineInterface): Promise<Location> => {
       '--show-toplevel',
     ]),
     git($, cwd, ['branch', '--show-current']),
+    // Untracked files are left out, so the count is of modified files only.
+    // The incoming count is as of the last fetch; nothing here fetches.
+    git($, cwd, ['status', '--porcelain=v2', '--branch', '--untracked-files=no']),
   ])
 
   // An empty branch is either a detached HEAD or no repo at all; HEAD still
@@ -141,7 +175,7 @@ const findLocation = async ($: EngineInterface): Promise<Location> => {
     [pathReal, homeReal],
   ])
 
-  return { path, worktree, branch }
+  return { path, worktree, branch, ...parseStatus(status) }
 }
 
 // Stores the location, which redraws the band when it changed.
@@ -268,7 +302,7 @@ export const register: Register = on => {
               {place.path}
             </Text>
             {place.worktree ? <Text color="green">{` {wt ${place.worktree}}`}</Text> : null}
-            {place.branch ? <Text color="yellow">{` (${place.branch})`}</Text> : null}
+            {place.branch ? <Text color="yellow">{` (${branchText(place)})`}</Text> : null}
             <Text color="gray">{` ${'─'.repeat(ruleFill(e.props.bodyColumns, labelLength(place)))}`}</Text>
           </Text>
         ) : (
