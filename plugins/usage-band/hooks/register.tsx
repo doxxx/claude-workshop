@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, SessionRateLimit } from 'claude-code'
+import type { EngineInterface, Register, SessionRateLimit, ThemeKey } from 'claude-code'
 import type { Location } from '../types'
 
 const cachedAt = atom({ plugin: 'usage-band', key: 'cachedAt' } as const, null)
@@ -9,8 +9,26 @@ const location = atom({ plugin: 'usage-band', key: 'location' } as const, null)
 // The mod API reports no cache TTL. Main-thread requests on this account
 // write 1h cache entries, so the expiry is counted from that.
 const CACHE_TTL_MS = 60 * 60 * 1000
-const BAR_CELLS = 8
+// The narrowest a bar's track gets; past that it grows with the band.
+const MIN_BAR_CELLS = 8
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+// Theme keys rather than raw colors, so the band follows the person's theme
+// on every surface. Each names the part's role, not a hue.
+const COLORS = {
+  rule: 'subtle',
+  // A border color: dark enough behind a fill on the desktop, where the text
+  // keys such as subtle draw as a light muted grey.
+  track: 'promptBorder',
+  path: 'ide',
+  worktree: 'success',
+  branch: 'warning',
+  model: 'text',
+  // Segment labels and figures read as plain text; the fills carry the color.
+  label: 'text',
+  context: 'suggestion',
+  limit: 'permission',
+} as const satisfies Record<string, ThemeKey>
 
 // Renders a token count compactly: 850, 45k, 1.2M. Rounding to thousands
 // first keeps 999,500 from rendering as "1000k".
@@ -21,10 +39,10 @@ export const formatTokens = (tokens: number): string => {
   return `${Math.round(tokens)}`
 }
 
-export const bar = (fraction: number): string => {
-  const filled = Math.round(Math.min(1, Math.max(0, fraction)) * BAR_CELLS)
-  return '█'.repeat(filled) + '░'.repeat(BAR_CELLS - filled)
-}
+// The share of a bar's track its fill covers, as a CSS-style width. Clamped,
+// since a window can report past 100%.
+export const fillWidth = (percent: number): string =>
+  `${Math.round(Math.min(100, Math.max(0, percent)))}%`
 
 // Formats an epoch time in the local zone, which the hooks environment does
 // not know: offsetMinutes comes from the host's `date +%z`. The day name is
@@ -109,10 +127,19 @@ export const labelLength = (location: Location): number =>
   (location.worktree ? ` {wt ${location.worktree}}`.length : 0) +
   (location.branch ? ` (${branchText(location)})`.length : 0)
 
-// The number of ─ cells that fill the rule after its label: "── " before the
-// label and one space after it. At least one, so it still reads as a border.
-export const ruleFill = (columns: number, labelLength: number): number =>
-  Math.max(1, columns - 3 - labelLength - 1)
+// The number of ─ cells between the rule's two labels: "── " and a space
+// around the left one (the folder, absent outside a repo's location), a space
+// and " ──" around the right one (the model). At least one, so it still
+// reads as a border.
+export const ruleFill = (
+  columns: number,
+  leftLength: number | null,
+  rightLength: number,
+): number => {
+  const left = leftLength === null ? 0 : 3 + leftLength + 1
+  const right = 1 + rightLength + 3
+  return Math.max(1, columns - left - right)
+}
 
 // Runs git in a directory, resolving to its trimmed output, or '' when it
 // fails, which includes running outside a repo.
@@ -260,7 +287,8 @@ export const register: Register = on => {
       return at > now ? ` (${formatTime(at, offsetMinutes, withDay)})` : ''
     }
 
-    const segments: { key: string; color: string; text: string }[] = []
+    // A segment draws as its label, a bar filled to percent, then its text.
+    const segments: { label: string; color: ThemeKey; percent: number; text: string }[] = []
 
     const { percent, tokens } = usage.context
     if (percent !== undefined) {
@@ -274,50 +302,74 @@ export const register: Register = on => {
           expiresAt > now ? ` (${formatTime(expiresAt, offsetMinutes, false)})` : ' (cold)'
       }
       segments.push({
-        key: 'C',
-        color: 'cyan',
-        text: `C ${bar(percent / 100)} ${Math.round(percent)}%${count}${expiry}`,
+        label: 'Context',
+        color: COLORS.context,
+        percent,
+        text: `${Math.round(percent)}%${count}${expiry}`,
       })
     }
 
-    for (const [key, kind, withDay] of [
-      ['S', 'five_hour', false],
-      ['W', 'seven_day', true],
+    for (const [label, kind, withDay] of [
+      ['Session', 'five_hour', false],
+      ['Weekly', 'seven_day', true],
     ] as const) {
       const limit = usage.rateLimits.find(one => one.kind === kind)
       if (!limit) continue
       segments.push({
-        key,
-        color: 'magenta',
-        text: `${key} ${bar(limit.percentUsed / 100)} ${Math.round(limit.percentUsed)}%${resetText(limit, withDay)}`,
+        label,
+        color: COLORS.limit,
+        percent: limit.percentUsed,
+        text: `${Math.round(limit.percentUsed)}%${resetText(limit, withDay)}`,
       })
     }
 
-    return (
-      <Box flexDirection="column">
+    // The desktop app shows the folder, branch, model and effort around its
+    // own prompt, so there the band keeps only the usage bars.
+    const isDesktop = e.surface === 'desktop'
+    if (isDesktop && segments.length === 0) return next(e)
+
+    // The rule carries the folder and branch on the left and the model and
+    // effort on the right, the ─ fill between them.
+    const modelText = `${model}${level ? ` [${level}]` : ''}`
+    const fill = ruleFill(e.props.bodyColumns, place ? labelLength(place) : null, modelText.length)
+    const rule = (
+      <Text wrap="truncate">
         {place ? (
-          <Text wrap="truncate">
-            <Text color="gray">── </Text>
-            <Text color="blue" bold>
+          <Text>
+            <Text color={COLORS.rule}>── </Text>
+            <Text color={COLORS.path} bold>
               {place.path}
             </Text>
-            {place.worktree ? <Text color="green">{` {wt ${place.worktree}}`}</Text> : null}
-            {place.branch ? <Text color="yellow">{` (${branchText(place)})`}</Text> : null}
-            <Text color="gray">{` ${'─'.repeat(ruleFill(e.props.bodyColumns, labelLength(place)))}`}</Text>
+            {place.worktree ? <Text color={COLORS.worktree}>{` {wt ${place.worktree}}`}</Text> : null}
+            {place.branch ? <Text color={COLORS.branch}>{` (${branchText(place)})`}</Text> : null}
+            <Text color={COLORS.rule}> </Text>
           </Text>
-        ) : (
-          <Text color="gray">{'─'.repeat(e.props.bodyColumns)}</Text>
-        )}
-        <Box>
-          <Text color="white" wrap="truncate">
-            {model}
-            {level ? ` [${level}]` : ''}
-          </Text>
-          {segments.map(segment => (
-            <Text key={segment.key} wrap="truncate">
-              <Text color="gray"> │ </Text>
-              <Text color={segment.color}>{segment.text}</Text>
-            </Text>
+        ) : null}
+        <Text color={COLORS.rule}>{`${'─'.repeat(fill)} `}</Text>
+        <Text color={COLORS.model}>{modelText}</Text>
+        <Text color={COLORS.rule}> ──</Text>
+      </Text>
+    )
+
+    return (
+      <Box flexDirection="column">
+        {isDesktop ? null : rule}
+        <Box width="100%">
+          {segments.map((segment, index) => (
+            // Each segment starts from no width and grows by the same share,
+            // so the segments split the band evenly and fill it.
+            <Box key={segment.label} flexGrow={1} width={0}>
+              {index === 0 ? null : <Text color={COLORS.rule}> │ </Text>}
+              <Text color={COLORS.label}>{`${segment.label} `}</Text>
+              {/* The track takes the segment's room left over from its text;
+                  the fill inside it is sized by percentage, so it is exact
+                  where the surface draws in pixels and rounds to cells in a
+                  terminal. */}
+              <Box flexGrow={1} minWidth={MIN_BAR_CELLS} height={1} backgroundColor={COLORS.track}>
+                <Box width={fillWidth(segment.percent)} height={1} backgroundColor={segment.color} />
+              </Box>
+              <Text color={COLORS.label} wrap="truncate">{` ${segment.text}`}</Text>
+            </Box>
           ))}
         </Box>
       </Box>

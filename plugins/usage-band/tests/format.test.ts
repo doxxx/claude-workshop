@@ -1,8 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 
 import {
-  bar,
   branchText,
+  fillWidth,
   formatTime,
   formatTokens,
   labelLength,
@@ -67,8 +67,10 @@ test('the rule fills to the width', async () => {
   // " (↓1 *3 main)"
   expect(labelLength({ ...location, behind: 1, modified: 3 })).toBe(3 + 8 + 13)
   expect(labelLength({ path: '~/p', worktree: null, branch: null, ...clean })).toBe(3)
-  expect(ruleFill(40, 18)).toBe(18)
-  expect(ruleFill(10, 18)).toBe(1)
+  // "── " + 18 + " " on the left, " " + 10 + " ──" on the right.
+  expect(ruleFill(60, 18, 10)).toBe(60 - 22 - 14)
+  expect(ruleFill(30, null, 10)).toBe(30 - 14)
+  expect(ruleFill(10, 18, 10)).toBe(1)
 })
 
 test('token counts render compactly', async () => {
@@ -78,11 +80,11 @@ test('token counts render compactly', async () => {
   expect(formatTokens(1_234_000)).toBe('1.2M')
 })
 
-test('bars fill by fraction and clamp', async () => {
-  expect(bar(0)).toBe('░░░░░░░░')
-  expect(bar(0.5)).toBe('████░░░░')
-  expect(bar(1.7)).toBe('████████')
-  expect(bar(-1)).toBe('░░░░░░░░')
+test('bar fills follow the percentage and clamp', async () => {
+  expect(fillWidth(0)).toBe('0%')
+  expect(fillWidth(22.5)).toBe('23%')
+  expect(fillWidth(170)).toBe('100%')
+  expect(fillWidth(-10)).toBe('0%')
 })
 
 test('times use the host offset', async () => {
