@@ -1,14 +1,24 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionRateLimit, ThemeKey } from 'claude-code'
-import type { Location } from '../types'
+import type { Location, SavedLimit } from '../types'
 
 const cachedAt = atom({ plugin: 'usage-band', key: 'cachedAt' } as const, null)
 const effort = atom({ plugin: 'usage-band', key: 'effort' } as const, null)
 const location = atom({ plugin: 'usage-band', key: 'location' } as const, null)
+const savedLimits = atom({ plugin: 'usage-band', key: 'savedLimits' } as const, null)
 
 // The mod API reports no cache TTL. Main-thread requests on this account
 // write 1h cache entries, so the expiry is counted from that.
 const CACHE_TTL_MS = 60 * 60 * 1000
+// $.state lasts only as long as the process, so each session's cache time is
+// kept in the store too, under its session id, for a resume after a restart.
+const CACHED_AT_KEY = 'cachedAt:'
+// A stored time this old is of no use to a resume, so it is dropped.
+const CACHED_AT_KEEP_MS = 30 * 24 * 60 * 60 * 1000
+// The rate-limit windows are the account's, not a session's, so the last ones
+// reported are kept under one key that every session writes and reads. A
+// session shows them until its own first response reports live ones.
+const RATE_LIMITS_KEY = 'rateLimits'
 // The narrowest a bar's track gets; past that it grows with the band.
 const MIN_BAR_CELLS = 8
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -221,12 +231,37 @@ async function refreshLocation($: EngineInterface): Promise<void> {
   await update($, location, () => found)
 }
 
+// Whether a window's reset time has gone by; one with no reset time never has.
+function hasReset(limit: SessionRateLimit, now: number): boolean {
+  return limit.resetsAt !== undefined && Date.parse(limit.resetsAt) <= now
+}
+
+// Brings back the session's stored cache time, unless the session already
+// has one (a hot reload keeps $.state), and drops other sessions' stale ones.
+async function restoreCachedAt($: EngineInterface): Promise<void> {
+  const [id, now, keys] = await Promise.all([$.session.id(), $.clock.now(), $.store.keys()])
+  const own = CACHED_AT_KEY + id
+  for (const key of keys) {
+    if (key === own || !key.startsWith(CACHED_AT_KEY)) continue
+    const at = await $.store.get(key)
+    if (typeof at !== 'number' || now - at > CACHED_AT_KEEP_MS) await $.store.delete(key)
+  }
+
+  if ((await read($, cachedAt)) !== null) return
+  const saved = await $.store.get(own)
+  if (typeof saved === 'number') await update($, cachedAt, () => saved)
+}
+
 export const register: Register = on => {
   let offsetMinutes = -new Date().getTimezoneOffset()
 
   on('session.start', async ($, e, next) => {
     const result = await $.process.run(['date', '+%z'])
     offsetMinutes = parseOffset(result.stdout) ?? offsetMinutes
+
+    await restoreCachedAt($)
+    const limits = await $.store.get(RATE_LIMITS_KEY)
+    if (Array.isArray(limits)) await update($, savedLimits, () => limits as SavedLimit[])
 
     if ((await read($, effort)) === null) {
       const { effortLevel } = (await $.settings.read()) as { effortLevel?: string }
@@ -267,12 +302,14 @@ export const register: Register = on => {
     if (isMain && touchedCache) {
       const at = await $.clock.now()
       await update($, cachedAt, () => at)
+      await $.store.set(CACHED_AT_KEY + (await $.session.id()), at)
     }
 
     return result
   })
 
-  on('session.measure', ($, e, next) => {
+  on('session.measure', async ($, e, next) => {
+    if (e.rateLimits.length > 0) await $.store.set(RATE_LIMITS_KEY, e.rateLimits)
     $.ui.invalidate('ui.render')
     return next(e)
   })
@@ -281,12 +318,13 @@ export const register: Register = on => {
     if (e.props.hasSurvey) return next(e)
 
     const { Box, Text } = $.ui.resolve(e)
-    const [model, level, place, usage, lastCachedAt, now] = await Promise.all([
+    const [model, level, place, usage, lastCachedAt, saved, now] = await Promise.all([
       $.session.model(),
       read($, effort),
       read($, location),
       $.session.usage(),
       read($, cachedAt),
+      read($, savedLimits),
       $.clock.now(),
     ])
 
@@ -319,17 +357,22 @@ export const register: Register = on => {
       })
     }
 
+    // Before the session's first response the stored windows stand in, marked
+    // ~ as last known. Other devices may have used more since, and a window
+    // whose reset has gone by is left out rather than guessed at.
+    const isLive = usage.rateLimits.length > 0
+    const limits = isLive ? usage.rateLimits : (saved ?? []).filter(one => !hasReset(one, now))
     for (const [label, kind, withDay] of [
       ['Session', 'five_hour', false],
       ['Weekly', 'seven_day', true],
     ] as const) {
-      const limit = usage.rateLimits.find(one => one.kind === kind)
+      const limit = limits.find(one => one.kind === kind)
       if (!limit) continue
       segments.push({
         label,
         color: COLORS.limit,
         percent: limit.percentUsed,
-        text: `${Math.round(limit.percentUsed)}%${resetText(limit, withDay)}`,
+        text: `${isLive ? '' : '~'}${Math.round(limit.percentUsed)}%${resetText(limit, withDay)}`,
       })
     }
 
