@@ -9,6 +9,7 @@ import {
   mainTreePath,
   parseOffset,
   parseStatus,
+  rowLength,
   ruleFill,
   tildify,
 } from '../hooks/register'
@@ -96,4 +97,15 @@ test('times use the host offset', async () => {
   expect(formatTime(at, -240, false)).toBe('3:05 PM')
   expect(formatTime(at, -240, true)).toBe('Fri 3:05 PM')
   expect(formatTime(Date.parse('2026-10-02T04:00:00Z'), -240, false)).toBe('12:00 AM')
+})
+
+test('a row of segments counts labels, tracks, text and separators', async () => {
+  expect(rowLength([])).toBe(0)
+  expect(rowLength([{ label: 'Context', text: '10%' }])).toBe(7 + 1 + 8 + 1 + 3)
+  expect(
+    rowLength([
+      { label: 'Context', text: '10%' },
+      { label: 'Weekly', text: '9%' },
+    ]),
+  ).toBe(20 + 3 + 6 + 1 + 8 + 1 + 2)
 })

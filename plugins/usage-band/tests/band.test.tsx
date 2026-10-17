@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 
 const BAND = {
   component: 'AbovePrompt',
@@ -23,7 +24,7 @@ const painted = (node: unknown, out: Record<string, unknown>[] = []) => {
   return out
 }
 
-test('each usage window draws a bar filled to its percentage', async ($, on) => {
+const mockUsage = (on: Parameters<TestBody>[1]) => {
   mock.clock(on, { now: Date.parse('2026-10-03T16:00:00Z') })
   mock.store(on, {})
   on('session.model', async () => ({ value: 'claude-opus-5-5' }))
@@ -37,6 +38,10 @@ test('each usage window draws a bar filled to its percentage', async ($, on) => 
       ],
     },
   }))
+}
+
+test('each usage window draws a bar filled to its percentage', async ($, on) => {
+  mockUsage(on)
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'usage-band', surface, ...BAND })
@@ -57,6 +62,25 @@ test('each usage window draws a bar filled to its percentage', async ($, on) => 
       expect(model).toBeDefined()
       expect(rule).toBeDefined()
     }
+    await ui.unmount()
+  }
+})
+
+test('a band too narrow for the bars side by side stacks them', async ($, on) => {
+  mockUsage(on)
+
+  for (const [columns, stacked] of [[100, false], [60, true]] as const) {
+    const ui = await $.ui.mount({
+      plugin: 'usage-band',
+      surface: 'desktop',
+      ...BAND,
+      props: { ...BAND.props, bodyColumns: columns },
+    })
+    // Stacked, the labels pad to one width and lose the separators.
+    expect(await ui.find({ type: 'Text', text: 'Weekly  ' })).toEqual(stacked ? expect.anything() : undefined)
+    expect(await ui.find({ type: 'Text', text: ' │ ' })).toEqual(stacked ? undefined : expect.anything())
+    // The texts pad on the left to the longest, " 110% (Wed 2:00 PM)".
+    expect(await ui.find({ type: 'Text', text: /^ {6}40% \(/ })).toEqual(stacked ? expect.anything() : undefined)
     await ui.unmount()
   }
 })

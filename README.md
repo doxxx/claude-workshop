@@ -18,5 +18,7 @@ To use a local clone instead, add the marketplace with its path, such as
   in its top border (with incoming and outgoing commits and the count of
   modified files) and the model and effort at its right end, then progress
   bars spread across the width for the context window (with the prompt cache
-  expiry), the 5-hour session limit and the weekly limit. In the desktop app, which shows the folder, branch, model and
-  effort itself, the band shows only the usage bars.
+  expiry), the 5-hour session limit and the weekly limit. Too narrow for the
+  bars side by side, it stacks them one per line. In the desktop app, which
+  shows the folder, branch, model and effort itself, the band shows only the
+  usage bars, in its monospaced font.

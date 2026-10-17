@@ -141,6 +141,16 @@ export const ruleFill = (
   return Math.max(1, columns - left - right)
 }
 
+// The cells a row of segments needs: each label and a space, the narrowest
+// track, a space and the text, with " │ " between segments. The segments'
+// text is monospaced on every surface, so this counts what is drawn.
+export const rowLength = (segments: readonly { label: string; text: string }[]): number =>
+  segments.reduce(
+    (sum, segment, index) =>
+      sum + (index ? 3 : 0) + segment.label.length + 1 + MIN_BAR_CELLS + 1 + segment.text.length,
+    0,
+  )
+
 // Runs git in a directory, resolving to its trimmed output, or '' when it
 // fails, which includes running outside a repo.
 const git = async ($: EngineInterface, cwd: string, args: string[]): Promise<string> => {
@@ -351,16 +361,25 @@ export const register: Register = on => {
       </Text>
     )
 
+    // Too narrow for the segments side by side, each takes a line of its own,
+    // the labels and texts padded to one width so the tracks line up and
+    // match, the texts kept to the right.
+    const stacked = rowLength(segments) > e.props.bodyColumns
+    const labelWidth = Math.max(...segments.map(segment => segment.label.length))
+    const textWidth = Math.max(...segments.map(segment => segment.text.length))
+
     return (
       <Box flexDirection="column">
         {isDesktop ? null : rule}
-        <Box width="100%">
+        <Box width="100%" flexDirection={stacked ? 'column' : 'row'}>
           {segments.map((segment, index) => (
-            // Each segment starts from no width and grows by the same share,
-            // so the segments split the band evenly and fill it.
-            <Box key={segment.label} flexGrow={1} width={0}>
-              {index === 0 ? null : <Text color={COLORS.rule}> │ </Text>}
-              <Text color={COLORS.label}>{`${segment.label} `}</Text>
+            // Side by side, each segment starts from no width and grows by the
+            // same share, so the segments split the band evenly and fill it.
+            <Box key={segment.label} flexGrow={1} width={stacked ? '100%' : 0}>
+              {/* mono sets the segment's text in the surface's monospaced
+                  face, as the terminal draws it; the terminal ignores it. */}
+              {index === 0 || stacked ? null : <Text color={COLORS.rule} mono> │ </Text>}
+              <Text color={COLORS.label} mono>{`${stacked ? segment.label.padEnd(labelWidth) : segment.label} `}</Text>
               {/* The track takes the segment's room left over from its text;
                   the fill inside it is sized by percentage, so it is exact
                   where the surface draws in pixels and rounds to cells in a
@@ -368,7 +387,7 @@ export const register: Register = on => {
               <Box flexGrow={1} minWidth={MIN_BAR_CELLS} height={1} backgroundColor={COLORS.track}>
                 <Box width={fillWidth(segment.percent)} height={1} backgroundColor={segment.color} />
               </Box>
-              <Text color={COLORS.label} wrap="truncate">{` ${segment.text}`}</Text>
+              <Text color={COLORS.label} mono wrap="truncate">{` ${stacked ? segment.text.padStart(textWidth) : segment.text}`}</Text>
             </Box>
           ))}
         </Box>
